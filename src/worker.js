@@ -354,6 +354,47 @@ function groupSimilarNews(news) {
   });
 }
 
+// Top5처럼 요약이 꼭 필요한 소수 기사에 한해, 원문 페이지의 og:description(또는 description 메타태그)을 가져온다.
+// 느리거나 차단된 사이트 때문에 전체 페이지가 지연되지 않도록 타임아웃을 둠.
+async function fetchOgDescription(link, timeoutMs = 4000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(link, {
+      headers: { "User-Agent": "Mozilla/5.0" },
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const match =
+      html.match(/<meta[^>]+property=["']og:description["'][^>]*content=["']([^"']*)["']/i) ||
+      html.match(/<meta[^>]+content=["']([^"']*)["'][^>]*property=["']og:description["']/i) ||
+      html.match(/<meta[^>]+name=["']description["'][^>]*content=["']([^"']*)["']/i) ||
+      html.match(/<meta[^>]+content=["']([^"']*)["'][^>]*name=["']description["']/i);
+    if (!match) return null;
+    return cleanDescription(decode(match[1]));
+  } catch (err) {
+    console.error(`og:description 가져오기 실패 [${link}]: ${err.message}`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Top5 그룹 중 요약이 없는 것만 원문에서 보완
+async function fillMissingSummaries(topGroups) {
+  await Promise.all(
+    topGroups.map(async (group) => {
+      if (group.summary) return;
+      const fetched = await fetchOgDescription(group.representative.link);
+      if (fetched && !isRedundantSummary(fetched, group.representative.cleanTitle)) {
+        group.summary = fetched;
+      }
+    })
+  );
+}
+
 function scoreGroup(group) {
   const base = sourceWeight(group.representative.source);
   const dupBonus = Math.min(group.relatedCount - 1, 5) * 2;
@@ -413,11 +454,16 @@ function renderCard(group, { showSummary = false } = {}) {
         </li>`;
 }
 
-function renderNewsPage(news) {
+async function renderNewsPage(news) {
   const groups = groupSimilarNews(news).sort((a, b) => b.sortTime - a.sortTime);
-  const topGroups = [...groups].sort((a, b) => scoreGroup(b) - scoreGroup(a)).slice(0, 5);
+  const rankedByScore = [...groups].sort((a, b) => scoreGroup(b) - scoreGroup(a));
+  const topGroups = rankedByScore.slice(0, 5);
+  const nextGroups = rankedByScore.slice(5, 10);
+
+  await fillMissingSummaries(topGroups);
 
   const topRows = topGroups.map((g) => renderCard(g, { showSummary: true })).join("\n");
+  const nextRows = nextGroups.map((g) => renderCard(g)).join("\n");
   const rows = groups.map((g) => renderCard(g)).join("\n");
 
   return `<!doctype html>
@@ -490,6 +536,11 @@ function renderNewsPage(news) {
         : ""
     }
     ${
+      nextGroups.length
+        ? `<div class="section-title">Top 6~${5 + nextGroups.length}</div><ul>${nextRows}</ul>`
+        : ""
+    }
+    ${
       groups.length
         ? `<div class="section-title">전체 뉴스</div><ul>${rows}</ul>`
         : `<div class="empty">아직 수집된 기사가 없어요.</div>`
@@ -534,7 +585,7 @@ export default {
     // 기본 화면: 저장된 뉴스 목록 보기
     try {
       const news = await fetchLatestNews(env);
-      return new Response(renderNewsPage(news), {
+      return new Response(await renderNewsPage(news), {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });
     } catch (err) {
