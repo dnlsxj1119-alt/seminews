@@ -72,6 +72,17 @@ function matchFilterKeyword(text) {
   return FILTER_KEYWORDS.find((kw) => text.includes(kw)) || null;
 }
 
+// 한줄 요약용: HTML 태그 제거 + 공백 정리 + 길이 제한
+function cleanDescription(raw, maxLen = 110) {
+  if (!raw) return "";
+  const text = raw
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "";
+  return text.length > maxLen ? `${text.slice(0, maxLen).trim()}…` : text;
+}
+
 // RSS(XML)는 언론사마다 구조가 대체로 비슷해서 정규식으로 안전하게 파싱 가능
 function parseItemBlocks(xml) {
   const items = [];
@@ -116,6 +127,7 @@ async function fetchGoogleNews() {
           link: item.link,
           source: item.source || "Google News",
           keyword,
+          description: cleanDescription(item.description),
           published_at: item.published_at,
         }));
       } catch (err) {
@@ -151,6 +163,7 @@ async function fetchPressNews() {
             link: item.link,
             source: feed.source,
             keyword,
+            description: cleanDescription(item.description),
             published_at: item.published_at,
           });
         }
@@ -192,8 +205,9 @@ async function saveToSupabase(env, items) {
         "Content-Type": "application/json",
         apikey: env.SUPABASE_SERVICE_ROLE_KEY,
         Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
-        // link가 unique 컬럼이라, 이미 있는 기사는 에러 없이 조용히 무시됨
-        Prefer: "resolution=ignore-duplicates,return=minimal",
+        // link가 unique 컬럼. 이미 있는 기사는 새 값으로 갱신(upsert)해서
+        // description처럼 나중에 추가된 필드도 재수집 시 기존 행에 채워지게 함
+        Prefer: "resolution=merge-duplicates,return=minimal",
       },
       body: JSON.stringify(items),
     }
@@ -209,7 +223,7 @@ async function saveToSupabase(env, items) {
 
 async function fetchLatestNews(env, limit = 200) {
   const params = new URLSearchParams({
-    select: "title,link,source,keyword,published_at,collected_at",
+    select: "title,link,source,keyword,description,published_at,collected_at",
     order: "published_at.desc.nullslast",
     limit: String(limit),
   });
@@ -280,6 +294,16 @@ function normalizeForDedup(title) {
     .toLowerCase();
 }
 
+// 구글 뉴스 description이 "제목 + 언론사명" 재조합일 뿐 실제 요약이 아닌 경우 걸러내기
+function isRedundantSummary(desc, title) {
+  const normDesc = normalizeForDedup(desc);
+  const normTitle = normalizeForDedup(title);
+  if (!normDesc) return true;
+  if (normDesc === normTitle) return true;
+  if (normDesc.startsWith(normTitle) && normDesc.length - normTitle.length <= 20) return true;
+  return false;
+}
+
 // 같은 기사를 여러 매체가 받아쓴 경우 하나로 묶는다.
 // 대표 기사는 매체 가중치가 높은 쪽을 우선 선택.
 function groupSimilarNews(news) {
@@ -315,11 +339,17 @@ function groupSimilarNews(news) {
       (s) => s !== representative.source
     );
 
+    // 요약이 제목을 그대로 반복하는 경우(구글 뉴스 등)는 의미가 없어 제외하고,
+    // 그룹 안에서 가중치 순으로 실제 요약 문장이 있는 첫 항목을 사용
+    const summary =
+      sorted.map((it) => it.description).find((d) => d && !isRedundantSummary(d, representative.cleanTitle)) || "";
+
     return {
       representative,
       relatedCount: items.length,
       relatedSources,
       sortTime,
+      summary,
     };
   });
 }
@@ -356,7 +386,7 @@ function relativeTime(iso) {
   return `${day}일 전`;
 }
 
-function renderCard(group) {
+function renderCard(group, { showSummary = false } = {}) {
   const item = group.representative;
   const href = safeHref(item.link);
   const title = escapeHtml(item.cleanTitle);
@@ -367,6 +397,8 @@ function renderCard(group) {
     group.relatedCount > 1
       ? `<span class="related" title="${escapeHtml(group.relatedSources.join(", "))}">관련기사 ${group.relatedCount}건</span>`
       : "";
+  const summaryHtml =
+    showSummary && group.summary ? `<div class="summary">${escapeHtml(group.summary)}</div>` : "";
 
   return `
         <li class="card">
@@ -377,6 +409,7 @@ function renderCard(group) {
             <span class="time">${escapeHtml(relativeTime(item.published_at || item.collected_at))}</span>
           </div>
           <div class="title">${titleHtml}</div>
+          ${summaryHtml}
         </li>`;
 }
 
@@ -384,8 +417,8 @@ function renderNewsPage(news) {
   const groups = groupSimilarNews(news).sort((a, b) => b.sortTime - a.sortTime);
   const topGroups = [...groups].sort((a, b) => scoreGroup(b) - scoreGroup(a)).slice(0, 5);
 
-  const topRows = topGroups.map(renderCard).join("\n");
-  const rows = groups.map(renderCard).join("\n");
+  const topRows = topGroups.map((g) => renderCard(g, { showSummary: true })).join("\n");
+  const rows = groups.map((g) => renderCard(g)).join("\n");
 
   return `<!doctype html>
 <html lang="ko">
@@ -433,12 +466,16 @@ function renderNewsPage(news) {
   .related { color: #b45309; }
   .time { color: #9ca3af; margin-left: auto; }
   .title { font-size: 0.98rem; line-height: 1.4; }
+  .summary { font-size: 0.85rem; color: #6b7280; line-height: 1.4; margin-top: 6px; }
   a { color: #2952cc; text-decoration: none; }
   a:hover { text-decoration: underline; }
   .empty { text-align: center; color: #6b7280; padding: 60px 20px; }
   .section-title { font-size: 0.95rem; font-weight: 700; margin: 24px 0 10px; }
   .section-title:first-child { margin-top: 0; }
-  @media (prefers-color-scheme: dark) { .related { color: #d9a441 !important; } }
+  @media (prefers-color-scheme: dark) {
+    .related { color: #d9a441 !important; }
+    .summary { color: #9aa0a8 !important; }
+  }
 </style>
 </head>
 <body>
