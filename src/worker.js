@@ -538,7 +538,13 @@ async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
 
   const topRows = topGroups.map((g) => renderCard(g, { showSummary: true })).join("\n");
   const nextRows = nextGroups.map((g) => renderCard(g)).join("\n");
-  const rows = groups.map((g) => renderCard(g)).join("\n");
+
+  // Top 10에 이미 나온 기사는 전체 뉴스에서 중복 노출하지 않음
+  const shownLinks = new Set(
+    [...topGroups, ...nextGroups].map((g) => g.representative.link)
+  );
+  const restGroups = groups.filter((g) => !shownLinks.has(g.representative.link));
+  const rows = restGroups.map((g) => renderCard(g)).join("\n");
 
   const prevDate = shiftDateStr(dateStr, -1);
   const nextDate = shiftDateStr(dateStr, 1);
@@ -655,9 +661,11 @@ async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
         : ""
     }
     ${
-      groups.length
+      groups.length === 0
+        ? `<div class="empty">아직 수집된 기사가 없어요.</div>`
+        : restGroups.length
         ? `<div class="section-title">전체 뉴스</div><ul>${rows}</ul>`
-        : `<div class="empty">아직 수집된 기사가 없어요.</div>`
+        : ""
     }
   </main>
 </body>
