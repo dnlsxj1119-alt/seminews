@@ -221,12 +221,40 @@ async function saveToSupabase(env, items) {
   return { inserted: items.length };
 }
 
-async function fetchLatestNews(env, limit = 200) {
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
+// KST 기준 오늘 날짜 문자열 (YYYY-MM-DD)
+function kstDateString(date = new Date()) {
+  return new Date(date.getTime() + KST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+// KST 캘린더 날짜 하루의 UTC 시작/끝 시각
+function kstDayRangeUtc(dateStr) {
+  const startUtc = new Date(`${dateStr}T00:00:00+09:00`);
+  const endUtc = new Date(startUtc.getTime() + 24 * 60 * 60 * 1000);
+  return { startUtc, endUtc };
+}
+
+function shiftDateStr(dateStr, days) {
+  const { startUtc } = kstDayRangeUtc(dateStr);
+  return kstDateString(new Date(startUtc.getTime() + days * 24 * 60 * 60 * 1000 + KST_OFFSET_MS));
+}
+
+function isValidDateStr(dateStr) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(dateStr);
+}
+
+// 해당 KST 날짜 하루치 기사만 조회 (하루 수집량이 넉넉히 들어오도록 500건까지)
+async function fetchNewsForDate(env, dateStr, limit = 500) {
+  const { startUtc, endUtc } = kstDayRangeUtc(dateStr);
   const params = new URLSearchParams({
     select: "title,link,source,keyword,description,published_at,collected_at",
     order: "published_at.desc.nullslast",
     limit: String(limit),
   });
+  params.append("published_at", `gte.${startUtc.toISOString()}`);
+  params.append("published_at", `lt.${endUtc.toISOString()}`);
+
   const res = await fetch(
     `${env.SUPABASE_URL}/rest/v1/semiconductor_news?${params}`,
     {
@@ -454,7 +482,16 @@ function renderCard(group, { showSummary = false } = {}) {
         </li>`;
 }
 
-async function renderNewsPage(news) {
+const WEEKDAY_KO = ["일", "월", "화", "수", "목", "금", "토"];
+
+function formatDateLabel(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  // UTC로 취급해서 계산해도 날짜 자체(y-m-d)는 KST 캘린더 날짜 그대로라 무방
+  const weekday = WEEKDAY_KO[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+  return `${m}월 ${d}일 (${weekday})`;
+}
+
+async function renderNewsPage(news, dateStr, todayStr) {
   const groups = groupSimilarNews(news).sort((a, b) => b.sortTime - a.sortTime);
   const rankedByScore = [...groups].sort((a, b) => scoreGroup(b) - scoreGroup(a));
   const topGroups = rankedByScore.slice(0, 5);
@@ -465,6 +502,16 @@ async function renderNewsPage(news) {
   const topRows = topGroups.map((g) => renderCard(g, { showSummary: true })).join("\n");
   const nextRows = nextGroups.map((g) => renderCard(g)).join("\n");
   const rows = groups.map((g) => renderCard(g)).join("\n");
+
+  const prevDate = shiftDateStr(dateStr, -1);
+  const nextDate = shiftDateStr(dateStr, 1);
+  const isToday = dateStr === todayStr;
+  const nextLinkHtml = isToday
+    ? `<span class="nav-btn disabled">다음 날 ▶</span>`
+    : `<a class="nav-btn" href="/?date=${nextDate}">다음 날 ▶</a>`;
+  const todayLinkHtml = isToday
+    ? ""
+    : `<a class="nav-btn today" href="/">오늘로</a>`;
 
   return `<!doctype html>
 <html lang="ko">
@@ -518,16 +565,39 @@ async function renderNewsPage(news) {
   .empty { text-align: center; color: #6b7280; padding: 60px 20px; }
   .section-title { font-size: 0.95rem; font-weight: 700; margin: 24px 0 10px; }
   .section-title:first-child { margin-top: 0; }
+  .date-nav { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .date-label { font-weight: 600; font-size: 0.95rem; margin-right: auto; }
+  .nav-btn {
+    font-size: 0.82rem;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid #e5e7eb;
+    color: #374151;
+    text-decoration: none;
+  }
+  .nav-btn:hover { background: #f3f4f6; text-decoration: none; }
+  .nav-btn.disabled { color: #c7cbd1; pointer-events: none; }
+  .nav-btn.today { border-color: #3b5bdb; color: #3b5bdb; }
   @media (prefers-color-scheme: dark) {
     .related { color: #d9a441 !important; }
     .summary { color: #9aa0a8 !important; }
+    .nav-btn { border-color: #2b2f36 !important; color: #c7ccd4 !important; }
+    .nav-btn:hover { background: #23262c !important; }
+    .nav-btn.disabled { color: #4a4f57 !important; }
+    .nav-btn.today { border-color: #7db4f7 !important; color: #7db4f7 !important; }
   }
 </style>
 </head>
 <body>
   <header>
     <h1>반도체 뉴스</h1>
-    <div class="sub">최신 ${news.length}건 (${groups.length}개 이슈) · 매일 오전 8시 자동 수집</div>
+    <div class="sub">${news.length}건 (${groups.length}개 이슈) · 매일 오전 8시 자동 수집</div>
+    <div class="date-nav">
+      <span class="date-label">${formatDateLabel(dateStr)}</span>
+      <a class="nav-btn" href="/?date=${prevDate}">◀ 이전 날</a>
+      ${nextLinkHtml}
+      ${todayLinkHtml}
+    </div>
   </header>
   <main>
     ${
@@ -582,10 +652,14 @@ export default {
       }
     }
 
-    // 기본 화면: 저장된 뉴스 목록 보기
+    // 기본 화면: 날짜별로 저장된 뉴스 목록 보기 (기본값: 오늘, KST 기준)
     try {
-      const news = await fetchLatestNews(env);
-      return new Response(await renderNewsPage(news), {
+      const todayStr = kstDateString();
+      const requested = url.searchParams.get("date");
+      const dateStr = requested && isValidDateStr(requested) ? requested : todayStr;
+
+      const news = await fetchNewsForDate(env, dateStr);
+      return new Response(await renderNewsPage(news, dateStr, todayStr), {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });
     } catch (err) {
