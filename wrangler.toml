@@ -2,10 +2,9 @@ name = "seminews"
 main = "src/worker.js"
 compatibility_date = "2026-07-01"
 
-# 매일 한국시간 오전 8시 = UTC 전날 23:00 (KST = UTC+9)
-# cron 표현식은 UTC 기준입니다.
+# 2시간마다 자동 수집 (UTC 기준, 하루 12회: 00,02,04...22시)
 [triggers]
-crons = ["0 23 * * *"]
+crons = ["0 */2 * * *"]
 
 # 아래 값들은 wrangler secret put 명령으로 등록하세요 (여기 파일엔 절대 넣지 마세요):
 #   SUPABASE_URL

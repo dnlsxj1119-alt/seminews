@@ -45,10 +45,10 @@ wrangler deploy
 
 Supabase 대시보드 → Table Editor → `semiconductor_news` 에서 저장된 데이터를 바로 확인하세요.
 
-## 5. 스케줄 시간 바꾸기
+## 5. 스케줄 바꾸기
 
-`wrangler.toml`의 `crons` 값은 UTC 기준입니다. 현재는 매일 KST 08:00(UTC 23:00 전날)로 설정되어 있어요.
-다른 시간으로 바꾸려면 `crontab.guru`에서 원하는 시간을 UTC로 변환해서 넣으면 됩니다.
+`wrangler.toml`의 `crons` 값은 UTC 기준입니다. 현재는 2시간마다(`0 */2 * * *`, 하루 12회) 실행되도록 설정되어 있어요.
+다른 주기/시간으로 바꾸려면 `crontab.guru`에서 원하는 표현식을 만들어서 넣으면 됩니다.
 
 ## 6. 검색 키워드 바꾸기
 
