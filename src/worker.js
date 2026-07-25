@@ -271,6 +271,35 @@ async function fetchNewsForDate(env, dateStr, limit = 500) {
   return res.json();
 }
 
+// 오늘 기사가 너무 적으면(이른 아침 등) 최소 개수를 채울 때까지 하루씩 과거로 확장해서 합치되,
+// 과거 하루치가 통째로 들어와 리스트가 너무 길어지지 않도록 최근 cap건으로 자른다.
+async function fetchNewsWithMinimum(env, dateStr, minCount = 10, cap = 20, maxLookbackDays = 14) {
+  const seen = new Set();
+  let news = [];
+  let cursor = dateStr;
+
+  for (let i = 0; i < maxLookbackDays && news.length < minCount; i++) {
+    const dayNews = await fetchNewsForDate(env, cursor);
+    for (const item of dayNews) {
+      if (seen.has(item.link)) continue;
+      seen.add(item.link);
+      news.push(item);
+    }
+    cursor = shiftDateStr(cursor, -1);
+  }
+
+  news.sort((a, b) => new Date(b.published_at || 0) - new Date(a.published_at || 0));
+  if (news.length > cap) news = news.slice(0, cap);
+
+  const oldestDateUsed = news.reduce((min, it) => {
+    if (!it.published_at) return min;
+    const d = kstDateString(new Date(it.published_at));
+    return d < min ? d : min;
+  }, dateStr);
+
+  return { news, oldestDateUsed };
+}
+
 // 주요 매체 가중치 (Top 스코어링용). 목록에 없으면 기본값 1.5,
 // 포털 미러(v.daum.net, 네이트 등 원 언론사가 아닌 배포 경로)는 0.5로 낮게.
 const SOURCE_WEIGHT = {
@@ -491,7 +520,15 @@ function formatDateLabel(dateStr) {
   return `${m}월 ${d}일 (${weekday})`;
 }
 
-async function renderNewsPage(news, dateStr, todayStr) {
+function formatDateRangeLabel(oldestDateUsed, dateStr) {
+  if (oldestDateUsed === dateStr) return formatDateLabel(dateStr);
+  const [, om, od] = oldestDateUsed.split("-").map(Number);
+  const [, dm] = dateStr.split("-").map(Number);
+  const startLabel = om === dm ? `${od}일` : `${om}월 ${od}일`;
+  return `${startLabel} ~ ${formatDateLabel(dateStr)}`;
+}
+
+async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
   const groups = groupSimilarNews(news).sort((a, b) => b.sortTime - a.sortTime);
   const rankedByScore = [...groups].sort((a, b) => scoreGroup(b) - scoreGroup(a));
   const topGroups = rankedByScore.slice(0, 5);
@@ -512,6 +549,10 @@ async function renderNewsPage(news, dateStr, todayStr) {
   const todayLinkHtml = isToday
     ? ""
     : `<a class="nav-btn today" href="/">오늘로</a>`;
+  const expandedNoteHtml =
+    oldestDateUsed !== dateStr
+      ? `<div class="expanded-note">해당 날짜 기사가 적어 이전 날짜까지 포함했어요</div>`
+      : "";
 
   return `<!doctype html>
 <html lang="ko">
@@ -578,6 +619,7 @@ async function renderNewsPage(news, dateStr, todayStr) {
   .nav-btn:hover { background: #f3f4f6; text-decoration: none; }
   .nav-btn.disabled { color: #c7cbd1; pointer-events: none; }
   .nav-btn.today { border-color: #3b5bdb; color: #3b5bdb; }
+  .expanded-note { font-size: 0.78rem; color: #9ca3af; margin-top: 4px; }
   @media (prefers-color-scheme: dark) {
     .related { color: #d9a441 !important; }
     .summary { color: #9aa0a8 !important; }
@@ -585,6 +627,7 @@ async function renderNewsPage(news, dateStr, todayStr) {
     .nav-btn:hover { background: #23262c !important; }
     .nav-btn.disabled { color: #4a4f57 !important; }
     .nav-btn.today { border-color: #7db4f7 !important; color: #7db4f7 !important; }
+    .expanded-note { color: #6b7078 !important; }
   }
 </style>
 </head>
@@ -593,11 +636,12 @@ async function renderNewsPage(news, dateStr, todayStr) {
     <h1>반도체 뉴스</h1>
     <div class="sub">${news.length}건 (${groups.length}개 이슈) · 매일 오전 8시 자동 수집</div>
     <div class="date-nav">
-      <span class="date-label">${formatDateLabel(dateStr)}</span>
+      <span class="date-label">${formatDateRangeLabel(oldestDateUsed, dateStr)}</span>
       <a class="nav-btn" href="/?date=${prevDate}">◀ 이전 날</a>
       ${nextLinkHtml}
       ${todayLinkHtml}
     </div>
+    ${expandedNoteHtml}
   </header>
   <main>
     ${
@@ -658,8 +702,11 @@ export default {
       const requested = url.searchParams.get("date");
       const dateStr = requested && isValidDateStr(requested) ? requested : todayStr;
 
-      const news = await fetchNewsForDate(env, dateStr);
-      return new Response(await renderNewsPage(news, dateStr, todayStr), {
+      const { news, oldestDateUsed } =
+        dateStr === todayStr
+          ? await fetchNewsWithMinimum(env, dateStr)
+          : { news: await fetchNewsForDate(env, dateStr), oldestDateUsed: dateStr };
+      return new Response(await renderNewsPage(news, dateStr, todayStr, oldestDateUsed), {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });
     } catch (err) {
