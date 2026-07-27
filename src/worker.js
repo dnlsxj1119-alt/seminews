@@ -379,27 +379,49 @@ function isRedundantSummary(desc, title) {
   return false;
 }
 
+// 제목을 의미 단위(단어) 토큰으로 분리. 앞부분만 비교하는 방식은 "2년 연속 1위" vs
+// "1위...삼성전자는 2위"처럼 순위 표현이 앞쪽에서 갈리는 경우를 못 잡아서 단어 집합으로 비교한다.
+function extractTokens(title) {
+  return title
+    .replace(/\[[^\]]*\]/g, " ")
+    .replace(/[,.!?"'“”()「」『』<>·\-–—:;…]/g, " ")
+    .split(/\s+/)
+    .map((t) => t.trim().toLowerCase())
+    .filter((t) => t.length >= 2);
+}
+
+// 자카드 유사도(공통 단어 비율)로 두 제목이 같은 기사인지 판단
+function titleSimilarity(tokensA, tokensB) {
+  const setA = new Set(tokensA);
+  const setB = new Set(tokensB);
+  if (setA.size === 0 || setB.size === 0) return 0;
+  let overlap = 0;
+  for (const t of setA) if (setB.has(t)) overlap++;
+  const unionSize = setA.size + setB.size - overlap;
+  return overlap / unionSize;
+}
+
+const SIMILARITY_THRESHOLD = 0.5;
+
 // 같은 기사를 여러 매체가 받아쓴 경우 하나로 묶는다.
 // 대표 기사는 매체 가중치가 높은 쪽을 우선 선택.
 function groupSimilarNews(news) {
-  const groups = [];
-  const keyToIndex = new Map();
+  const clusters = []; // { items, tokens }
 
   for (const raw of news) {
     const cleanTitle = splitTitleSource(raw.title);
-    const norm = normalizeForDedup(cleanTitle);
-    const key = norm.length >= 10 ? norm.slice(0, 18) : norm;
-
+    const tokens = extractTokens(cleanTitle);
     const entry = { ...raw, cleanTitle };
-    if (keyToIndex.has(key)) {
-      groups[keyToIndex.get(key)].push(entry);
+
+    const match = clusters.find((c) => titleSimilarity(tokens, c.tokens) >= SIMILARITY_THRESHOLD);
+    if (match) {
+      match.items.push(entry);
     } else {
-      keyToIndex.set(key, groups.length);
-      groups.push([entry]);
+      clusters.push({ items: [entry], tokens });
     }
   }
 
-  return groups.map((items) => {
+  return clusters.map(({ items }) => {
     const sorted = [...items].sort((a, b) => {
       const w = sourceWeight(b.source) - sourceWeight(a.source);
       if (w !== 0) return w;
