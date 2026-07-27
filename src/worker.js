@@ -25,6 +25,8 @@ const PRESS_FEEDS = [
   { source: "ZDNet Korea", url: "https://zdnet.co.kr/feed/" },
 ];
 
+// 회사명은 일부러 뺐음: 삼성전자/SK하이닉스 단독 언급만으로 매칭하면
+// 갤럭시 스마트폰 같은 완제품(DX) 기사까지 걸려서 아래 키워드로만 판단
 const FILTER_KEYWORDS = [
   "반도체",
   "파운드리",
@@ -32,8 +34,6 @@ const FILTER_KEYWORDS = [
   "고대역폭메모리",
   "EUV",
   "노광",
-  "삼성전자",
-  "SK하이닉스",
   "낸드",
   "D램",
   "디램",
@@ -44,6 +44,10 @@ const FILTER_KEYWORDS = [
   "Lam Research",
   "TSMC",
 ];
+
+// 완제품 브랜드/모델명처럼 확실한 경우만 제외. "가전"/"아이폰" 같은 범용 단어는
+// TSMC 가격 인상, 반도체 부문 성과급 기사 등에도 흔히 같이 나와서 오탐이 많아 제외
+const EXCLUDE_KEYWORDS = ["갤럭시", "트라이폴드", "이어버드", "에어팟"];
 
 function buildGoogleRssUrl(keyword) {
   const q = encodeURIComponent(keyword);
@@ -68,8 +72,10 @@ function safeIsoDate(raw) {
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-function matchFilterKeyword(text) {
-  return FILTER_KEYWORDS.find((kw) => text.includes(kw)) || null;
+// 제목 기준으로만 판단 (본문 뒷부분에 우연히 섞인 키워드로 오탐하는 것 방지)
+function matchFilterKeyword(title) {
+  if (EXCLUDE_KEYWORDS.some((kw) => title.includes(kw))) return null;
+  return FILTER_KEYWORDS.find((kw) => title.includes(kw)) || null;
 }
 
 // 한줄 요약용: HTML 태그 제거 + 공백 정리 + 길이 제한
@@ -122,14 +128,16 @@ async function fetchGoogleNews() {
           return [];
         }
         const xml = await res.text();
-        return parseItemBlocks(xml).map((item) => ({
-          title: item.title,
-          link: item.link,
-          source: item.source || "Google News",
-          keyword,
-          description: cleanDescription(item.description),
-          published_at: item.published_at,
-        }));
+        return parseItemBlocks(xml)
+          .filter((item) => !EXCLUDE_KEYWORDS.some((kw) => item.title.includes(kw)))
+          .map((item) => ({
+            title: item.title,
+            link: item.link,
+            source: item.source || "Google News",
+            keyword,
+            description: cleanDescription(item.description),
+            published_at: item.published_at,
+          }));
       } catch (err) {
         console.error(`구글 뉴스 RSS 에러 "${keyword}": ${err.message}`);
         return [];
@@ -156,7 +164,7 @@ async function fetchPressNews() {
 
         const matched = [];
         for (const item of items) {
-          const keyword = matchFilterKeyword(`${item.title} ${item.description}`);
+          const keyword = matchFilterKeyword(item.title);
           if (!keyword) continue;
           matched.push({
             title: item.title,
@@ -273,7 +281,7 @@ async function fetchNewsForDate(env, dateStr, limit = 500) {
 
 // 오늘 기사가 너무 적으면(이른 아침 등) 최소 개수를 채울 때까지 하루씩 과거로 확장해서 합치되,
 // 과거 하루치가 통째로 들어와 리스트가 너무 길어지지 않도록 최근 cap건으로 자른다.
-async function fetchNewsWithMinimum(env, dateStr, minCount = 10, cap = 20, maxLookbackDays = 14) {
+async function fetchNewsWithMinimum(env, dateStr, minCount = 10, cap = 40, maxLookbackDays = 14) {
   const seen = new Set();
   let news = [];
   let cursor = dateStr;
