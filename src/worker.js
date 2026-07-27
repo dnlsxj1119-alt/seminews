@@ -47,7 +47,17 @@ const FILTER_KEYWORDS = [
 
 // 완제품 브랜드/모델명처럼 확실한 경우만 제외. "가전"/"아이폰" 같은 범용 단어는
 // TSMC 가격 인상, 반도체 부문 성과급 기사 등에도 흔히 같이 나와서 오탐이 많아 제외
-const EXCLUDE_KEYWORDS = ["갤럭시", "트라이폴드", "이어버드", "에어팟"];
+const EXCLUDE_KEYWORDS = [
+  "갤럭시",
+  "갤Z",
+  "갤S",
+  "갤워치",
+  "갤탭",
+  "갤노트",
+  "트라이폴드",
+  "이어버드",
+  "에어팟",
+];
 
 function buildGoogleRssUrl(keyword) {
   const q = encodeURIComponent(keyword);
