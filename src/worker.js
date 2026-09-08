@@ -652,7 +652,7 @@ async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
   .empty { text-align: center; color: #6b7280; padding: 60px 20px; }
   .section-title { font-size: 0.95rem; font-weight: 700; margin: 24px 0 10px; }
   .section-title:first-child { margin-top: 0; }
-  .date-nav { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .date-nav { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
   .date-label { font-weight: 600; font-size: 0.95rem; margin-right: auto; }
   .nav-btn {
     font-size: 0.82rem;
@@ -666,6 +666,15 @@ async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
   .nav-btn.disabled { color: #c7cbd1; pointer-events: none; }
   .nav-btn.today { border-color: #3b5bdb; color: #3b5bdb; }
   .expanded-note { font-size: 0.78rem; color: #9ca3af; margin-top: 4px; }
+  .date-picker {
+    font: inherit;
+    font-size: 0.82rem;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid #e5e7eb;
+    color: #374151;
+    background: #fff;
+  }
   @media (prefers-color-scheme: dark) {
     .related { color: #d9a441 !important; }
     .summary { color: #9aa0a8 !important; }
@@ -674,6 +683,7 @@ async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
     .nav-btn.disabled { color: #4a4f57 !important; }
     .nav-btn.today { border-color: #7db4f7 !important; color: #7db4f7 !important; }
     .expanded-note { color: #6b7078 !important; }
+    .date-picker { background: #1e2126 !important; border-color: #2b2f36 !important; color: #c7ccd4 !important; }
   }
 </style>
 </head>
@@ -686,6 +696,14 @@ async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
       <a class="nav-btn" href="/?date=${prevDate}">◀ 이전 날</a>
       ${nextLinkHtml}
       ${todayLinkHtml}
+      <input
+        type="date"
+        class="date-picker"
+        value="${escapeHtml(dateStr)}"
+        max="${escapeHtml(todayStr)}"
+        onchange="if(this.value)location.href='/?date='+this.value"
+        aria-label="날짜 선택"
+      />
     </div>
     ${expandedNoteHtml}
   </header>
