@@ -2,10 +2,15 @@ name = "seminews"
 main = "src/worker.js"
 compatibility_date = "2026-07-01"
 
-# 2시간마다 자동 수집 (UTC 기준, 하루 12회: 00,02,04...22시)
+# "0 * * * *"   1시간마다 자동 수집 (일부 언론사 RSS는 1~2시간이면 기사가 밀려나가서 2시간 주기론 놓침)
+# "30 21 * * *" UTC 21:30 = KST 06:30, 어제 하루치를 다시 훑어서 빠진 기사를 메움
+#               (src/worker.js의 DAILY_BACKFILL_CRON 값과 같아야 함)
 [triggers]
-crons = ["0 */2 * * *"]
+crons = ["0 * * * *", "30 21 * * *"]
 
 # 아래 값들은 wrangler secret put 명령으로 등록하세요 (여기 파일엔 절대 넣지 마세요):
 #   SUPABASE_URL
 #   SUPABASE_SERVICE_ROLE_KEY
+#   NAVER_CLIENT_ID          (선택: 네이버 검색 API, 없으면 이 소스만 건너뜀)
+#   NAVER_CLIENT_SECRET      (선택)
+#   COLLECT_TOKEN            (선택: /collect, /backfill 을 ?token=... 없이 못 부르게 잠금)
