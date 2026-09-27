@@ -617,7 +617,9 @@ async function fetchNewsInRange(env, fromStr, toStr, limit = MAX_ITEMS_PER_PAGE)
 
 // 오늘 기사가 너무 적으면(이른 아침 등) 최소 개수를 채울 때까지 하루씩 과거로 확장해서 합치되,
 // 과거 하루치가 통째로 들어와 리스트가 너무 길어지지 않도록 최근 cap건으로 자른다.
-async function fetchNewsWithMinimum(env, dateStr, minCount = 10, cap = 40, maxLookbackDays = 14) {
+// cap이 40이던 시절엔 하루 수집량 자체가 적어서 문제가 없었는데, 소스를 늘린 뒤로는
+// 하루 200건 넘게 들어와서 오늘 화면이 40건에서 잘려 보였다.
+async function fetchNewsWithMinimum(env, dateStr, minCount = 10, cap = 100, maxLookbackDays = 14) {
   // 오늘치부터 먼저 본다. 대부분은 여기서 끝나고 쿼리 1번으로 충분하다.
   let news = await fetchNewsForDate(env, dateStr, cap);
 
