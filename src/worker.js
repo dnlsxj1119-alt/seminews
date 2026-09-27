@@ -1101,10 +1101,12 @@ async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
 const PAGE_CACHE_SECONDS_TODAY = 300; // 5분 - 수집 주기가 1시간이라 이 정도면 충분히 최신
 const PAGE_CACHE_SECONDS_PAST = 3600; // 지난 날짜는 거의 안 바뀐다
 
-// 수집 직후엔 오늘 페이지 캐시를 버려서 새 기사가 바로 보이게 한다
-async function purgeTodayPageCache(url, todayStr) {
+// 수집 직후엔 오늘 페이지 캐시를 버려서 새 기사가 바로 보이게 한다.
+// 크론에는 들어오는 요청이 없어서 주소를 알 수 없기 때문에 wrangler.toml의
+// SITE_ORIGIN 값을 쓴다. 값이 없으면 캐시만 그대로 두고 수집은 정상 진행한다.
+async function purgeTodayPageCache(origin, todayStr) {
+  if (!origin) return;
   const cache = caches.default;
-  const origin = `${url.protocol}//${url.host}`;
   await Promise.all([
     cache.delete(new Request(`${origin}/`)),
     cache.delete(new Request(`${origin}/?date=${todayStr}`)),
@@ -1135,6 +1137,7 @@ export default {
           const yesterday = shiftDateStr(kstDateString(), -1);
           const { items, stats } = await backfillNews(env, yesterday, yesterday);
           const result = await saveToSupabase(env, items);
+          await purgeTodayPageCache(env.SITE_ORIGIN, kstDateString());
           const failed = stats.filter((st) => st.status !== "ok");
           console.log(
             `어제(${yesterday}) 백필: 후보 ${items.length}건 저장 ${result.inserted}건` +
@@ -1149,6 +1152,8 @@ export default {
       (async () => {
         const { items, summary, stats } = await fetchAllNews(env);
         await saveToSupabase(env, items);
+        // 방금 모은 기사가 5분 캐시에 막혀 늦게 보이지 않도록 오늘 페이지 캐시를 버린다
+        await purgeTodayPageCache(env.SITE_ORIGIN, kstDateString());
         const failed = stats.filter((st) => st.status !== "ok" && !st.status.startsWith("건너뜀"));
         console.log(
           `수집 완료: 후보 ${items.length}건 (네이버 ${summary.naver} / 언론사RSS ${summary.press} / 구글 ${summary.google})` +
@@ -1174,7 +1179,7 @@ export default {
           deep ? { naverOnly: true, pages: 4 } : {}
         );
         const result = await saveToSupabase(env, items);
-        ctx.waitUntil(purgeTodayPageCache(url, kstDateString()));
+        ctx.waitUntil(purgeTodayPageCache(`${url.protocol}//${url.host}`, kstDateString()));
         return new Response(
           JSON.stringify(
             {
@@ -1216,7 +1221,7 @@ export default {
 
         const { items, stats, dates } = await backfillNews(env, fromStr, toStr);
         const result = await saveToSupabase(env, items);
-        ctx.waitUntil(purgeTodayPageCache(url, todayStr));
+        ctx.waitUntil(purgeTodayPageCache(`${url.protocol}//${url.host}`, todayStr));
         const collected = stats.reduce((sum, st) => sum + st.count, 0);
         return new Response(
           JSON.stringify(
