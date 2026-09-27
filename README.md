@@ -84,6 +84,21 @@ npx wrangler dev
   자동 수집을 계속 돌리려면 결국 `npx wrangler deploy`로 배포해야 합니다.
   (로컬은 컴퓨터가 켜져 있고 dev 서버가 떠 있을 때만 동작)
 
+## 3-3. 올릴 때는 한 번에
+
+코드를 고친 뒤 반영하려면 두 곳에 각각 올려야 합니다.
+
+| 명령 | 어디로 | 효과 |
+|---|---|---|
+| `git push` | GitHub | 코드 보관. **사이트는 안 바뀜** |
+| `npx wrangler deploy` | Cloudflare | 실제 사이트가 바뀜 |
+
+둘을 매번 치기 번거로워서 묶어뒀습니다.
+
+```bash
+./deploy.sh
+```
+
 ## 4. 동작 확인
 
 배포되면 나오는 URL(예: `https://seminews.<your-subdomain>.workers.dev`)로 접속하면
