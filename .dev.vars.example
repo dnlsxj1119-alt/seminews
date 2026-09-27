@@ -1,0 +1,15 @@
+# 로컬 개발(npx wrangler dev)에서 쓰는 값. 이 파일을 복사해서 .dev.vars 를 만들고 실제 값을 넣으세요.
+#   cp .dev.vars.example .dev.vars
+#
+# 값은 Supabase 대시보드 → 프로젝트 → Settings → API 에서 확인합니다.
+#   SUPABASE_URL               = Project URL
+#   SUPABASE_SERVICE_ROLE_KEY  = service_role 키 (anon 키 아님)
+#
+# .dev.vars 는 .gitignore 에 들어 있어서 커밋되지 않습니다.
+SUPABASE_URL="https://xxxxxxxxxxxx.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY="여기에_service_role_키"
+
+# 선택값 - 없으면 해당 기능만 건너뜁니다
+# NAVER_CLIENT_ID=""
+# NAVER_CLIENT_SECRET=""
+# COLLECT_TOKEN=""
