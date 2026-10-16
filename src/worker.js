@@ -174,13 +174,21 @@ const HTML_ENTITIES = {
 // 예전엔 &#39; 하나만 알아서 일부 언론사 제목에 &#039; 가 그대로 찍혔다.
 const ENTITY_RE = /&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([a-zA-Z]+));/g;
 
+function replaceEntity(m, dec, hex, name) {
+  if (name) return HTML_ENTITIES[name] ?? m;
+  const code = dec ? parseInt(dec, 10) : parseInt(hex, 16);
+  return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : m;
+}
+
+// 일부 피드는 두 번 인코딩해서 보낸다: ' → &#039; → &amp;#039;
+// 한 번만 풀면 &#039; 가 남으니 바뀌는 게 없을 때까지 최대 3번 푼다.
 function decodeEntities(s) {
-  if (s.indexOf("&") === -1) return s;
-  return s.replace(ENTITY_RE, (m, dec, hex, name) => {
-    if (name) return HTML_ENTITIES[name] ?? m;
-    const code = dec ? parseInt(dec, 10) : parseInt(hex, 16);
-    return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : m;
-  });
+  for (let i = 0; i < 3 && s.indexOf("&") !== -1; i++) {
+    const next = s.replace(ENTITY_RE, replaceEntity);
+    if (next === s) break;
+    s = next;
+  }
+  return s;
 }
 
 function decode(s) {
