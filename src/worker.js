@@ -1139,6 +1139,7 @@ const PAGE_CSS = `
   .range-row .date-picker { flex: 0 1 auto; }
   .range-sep { color: #9ca3af; }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .back-today { margin-left: auto; }
   .nav-btn.active { background: #3b5bdb; border-color: #3b5bdb; color: #fff; }
   mark { background: #fde68a; color: inherit; padding: 0 1px; border-radius: 2px; }
   .search-note { font-size: 0.8rem; color: #9ca3af; margin-top: 8px; }
@@ -1307,9 +1308,7 @@ function renderSearchPage({ q, terms, from, to, todayStr, news }) {
   }).join("");
 
   let resultHtml;
-  if (!terms.length) {
-    resultHtml = `<div class="empty">검색어를 입력하세요.</div>`;
-  } else if (!groups.length) {
+  if (!groups.length) {
     resultHtml = `<div class="empty">${escapeHtml(formatRangeText(from, to))} 동안 “${escapeHtml(q)}” 기사가 없어요.<br />기간을 넓혀 보세요.</div>`;
   } else {
     const capNote =
@@ -1348,7 +1347,7 @@ ${PAGE_CSS}</style>
         <input type="date" class="date-picker" name="to" value="${escapeHtml(to)}" max="${escapeHtml(todayStr)}" aria-label="끝 날짜" />
       </div>
     </form>
-    <div class="chips">${chips}</div>
+    <div class="chips">${chips}<a class="nav-btn today back-today" href="/">← 오늘 뉴스</a></div>
   </header>
   <main>
     ${resultHtml}
@@ -1518,6 +1517,8 @@ export default {
         const todayStr = kstDateString();
         const q = (url.searchParams.get("q") || "").trim().slice(0, 100);
         const terms = parseSearchTerms(q);
+        // 검색창을 비우고 검색하면 오늘 뉴스로 돌아간다
+        if (!terms.length) return Response.redirect(`${url.origin}/`, 302);
         const { from, to } = resolveSearchRange(url, todayStr);
 
         const cache = caches.default;
