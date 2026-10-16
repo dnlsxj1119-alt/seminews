@@ -648,6 +648,51 @@ async function fetchNewsWithMinimum(env, dateStr, minCount = 10, cap = 100, maxL
   return { news, oldestDateUsed };
 }
 
+// 검색 결과 상한. 날짜 페이지(500)보다 낮게 잡아서 기간을 "전체"로 둬도 렌더가 가볍다.
+const MAX_SEARCH_RESULTS = 300;
+const MAX_SEARCH_TERMS = 5;
+
+// 검색어를 단어로 쪼갠다. PostgREST 필터 문법을 깨거나 와일드카드로 해석되는 문자는 공백으로 바꾼다.
+function parseSearchTerms(q) {
+  return [
+    ...new Set(
+      String(q || "")
+        .replace(/[%_*"\\(),.:]/g, " ")
+        .split(/\s+/)
+        .filter(Boolean)
+    ),
+  ].slice(0, MAX_SEARCH_TERMS);
+}
+
+// 모든 단어가 제목·요약·언론사 중 어딘가에 들어 있는 기사 (대소문자 무시)
+// fromStr/toStr 가 비어 있으면 그쪽 끝은 제한 없음
+async function searchNews(env, terms, fromStr, toStr) {
+  const params = new URLSearchParams({
+    select: "title,link,source,keyword,description,published_at,collected_at",
+    order: "published_at.desc.nullslast",
+    limit: String(MAX_SEARCH_RESULTS),
+  });
+  const conds = terms.map((t) => {
+    const pat = `"*${t}*"`;
+    return `or(title.ilike.${pat},description.ilike.${pat},source.ilike.${pat})`;
+  });
+  params.append("and", `(${conds.join(",")})`);
+  if (fromStr) params.append("published_at", `gte.${kstDayRangeUtc(fromStr).startUtc.toISOString()}`);
+  if (toStr) params.append("published_at", `lt.${kstDayRangeUtc(toStr).endUtc.toISOString()}`);
+
+  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/semiconductor_news?${params}`, {
+    headers: {
+      apikey: env.SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Supabase 검색 실패: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
 // 주요 매체 가중치 (Top 스코어링용). 목록에 없으면 기본값 1.5,
 // 포털 미러(v.daum.net, 네이트 등 원 언론사가 아닌 배포 경로)는 0.5로 낮게.
 const SOURCE_WEIGHT = {
@@ -888,10 +933,33 @@ function relativeTime(iso) {
   return `${day}일 전`;
 }
 
-function renderCard(group, { showSummary = false } = {}) {
+// 검색어와 맞는 부분을 <mark>로 감싼다. 원문을 먼저 쪼갠 뒤 조각마다 이스케이프해서
+// &amp; 같은 엔티티 안쪽이 잘려 들어가는 일이 없게 한다.
+function highlightHtml(text, re) {
+  if (!re) return escapeHtml(text);
+  return String(text ?? "")
+    .split(re)
+    .map((part, i) => (i % 2 ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part)))
+    .join("");
+}
+
+function buildHighlightRe(terms) {
+  if (!terms.length) return null;
+  const escaped = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return new RegExp(`(${escaped.join("|")})`, "gi");
+}
+
+// 검색 결과는 몇 주 전 기사도 섞이니 "12일 전" 대신 날짜로 보여준다
+function shortDate(iso) {
+  if (!iso) return "";
+  const [y, m, d] = kstDateString(new Date(iso)).split("-");
+  return `${y}.${m}.${d}`;
+}
+
+function renderCard(group, { showSummary = false, highlightRe = null, absoluteDate = false } = {}) {
   const item = group.representative;
   const href = safeHref(item.link);
-  const title = escapeHtml(item.cleanTitle);
+  const title = highlightHtml(item.cleanTitle, highlightRe);
   const titleHtml = href
     ? `<a href="${href}" target="_blank" rel="noopener noreferrer">${title}</a>`
     : title;
@@ -900,7 +968,11 @@ function renderCard(group, { showSummary = false } = {}) {
       ? `<span class="related" title="${escapeHtml(group.relatedSources.join(", "))}">관련기사 ${group.relatedCount}건</span>`
       : "";
   const summaryHtml =
-    showSummary && group.summary ? `<div class="summary">${escapeHtml(group.summary)}</div>` : "";
+    showSummary && group.summary
+      ? `<div class="summary">${highlightHtml(group.summary, highlightRe)}</div>`
+      : "";
+  const when = item.published_at || item.collected_at;
+  const timeText = absoluteDate ? shortDate(when) : relativeTime(when);
 
   return `
         <li class="card">
@@ -908,7 +980,7 @@ function renderCard(group, { showSummary = false } = {}) {
             <span class="source">${escapeHtml(item.source || "출처 미상")}</span>
             <span class="keyword">${escapeHtml(item.keyword || "")}</span>
             ${relatedBadge}
-            <span class="time">${escapeHtml(relativeTime(item.published_at || item.collected_at))}</span>
+            <span class="time">${escapeHtml(timeText)}</span>
           </div>
           <div class="title">${titleHtml}</div>
           ${summaryHtml}
@@ -932,45 +1004,24 @@ function formatDateRangeLabel(oldestDateUsed, dateStr) {
   return `${startLabel} ~ ${formatDateLabel(dateStr)}`;
 }
 
-async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
-  const groups = groupSimilarNews(news).sort((a, b) => b.sortTime - a.sortTime);
-  const rankedByScore = [...groups].sort((a, b) => scoreGroup(b) - scoreGroup(a));
-  const topGroups = rankedByScore.slice(0, 5);
-  const nextGroups = rankedByScore.slice(5, 10);
+// 스크롤을 내리면 나타나는 "맨 위로" 버튼
+const TO_TOP_HTML = `
+  <button type="button" class="to-top" id="to-top" aria-label="맨 위로" title="맨 위로">↑</button>
+  <script>
+    (function () {
+      var btn = document.getElementById("to-top");
+      function update() { btn.classList.toggle("show", window.scrollY > 400); }
+      window.addEventListener("scroll", update, { passive: true });
+      update();
+      btn.addEventListener("click", function () {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+    })();
+  </script>
+`;
 
-  await fillMissingSummaries(topGroups);
-
-  const topRows = topGroups.map((g) => renderCard(g, { showSummary: true })).join("\n");
-  const nextRows = nextGroups.map((g) => renderCard(g)).join("\n");
-
-  // Top 10에 이미 나온 기사는 전체 뉴스에서 중복 노출하지 않음
-  const shownLinks = new Set(
-    [...topGroups, ...nextGroups].map((g) => g.representative.link)
-  );
-  const restGroups = groups.filter((g) => !shownLinks.has(g.representative.link));
-  const rows = restGroups.map((g) => renderCard(g)).join("\n");
-
-  const prevDate = shiftDateStr(dateStr, -1);
-  const nextDate = shiftDateStr(dateStr, 1);
-  const isToday = dateStr === todayStr;
-  const nextLinkHtml = isToday
-    ? `<span class="nav-btn disabled">다음 날 ▶</span>`
-    : `<a class="nav-btn" href="/?date=${nextDate}">다음 날 ▶</a>`;
-  const todayLinkHtml = isToday
-    ? ""
-    : `<a class="nav-btn today" href="/">오늘로</a>`;
-  const expandedNoteHtml =
-    oldestDateUsed !== dateStr
-      ? `<div class="expanded-note">해당 날짜 기사가 적어 이전 날짜까지 포함했어요</div>`
-      : "";
-
-  return `<!doctype html>
-<html lang="ko">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>반도체 뉴스</title>
-<style>
+// 날짜 페이지와 검색 페이지가 같이 쓰는 스타일
+const PAGE_CSS = `
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
   body {
@@ -1060,6 +1111,43 @@ async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
   }
   .to-top.show { opacity: 1; visibility: visible; transform: none; }
   .to-top:hover { background: #f3f4f6; }
+  h1 a { color: inherit !important; text-decoration: none !important; }
+  .search-form { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+  .search-input {
+    font: inherit;
+    font-size: 0.9rem;
+    flex: 1 1 200px;
+    min-width: 0;
+    padding: 7px 12px;
+    border-radius: 8px;
+    border: 1px solid #d1d5db;
+    background: #fff;
+    color: inherit;
+  }
+  .search-btn {
+    font: inherit;
+    font-size: 0.85rem;
+    padding: 7px 14px;
+    border-radius: 8px;
+    border: 1px solid #3b5bdb;
+    background: #3b5bdb;
+    color: #fff;
+    cursor: pointer;
+  }
+  .search-btn:hover { background: #2f4bc0; }
+  .range-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; width: 100%; font-size: 0.82rem; }
+  .range-row .date-picker { flex: 0 1 auto; }
+  .range-sep { color: #9ca3af; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .nav-btn.active { background: #3b5bdb; border-color: #3b5bdb; color: #fff; }
+  mark { background: #fde68a; color: inherit; padding: 0 1px; border-radius: 2px; }
+  .search-note { font-size: 0.8rem; color: #9ca3af; margin-top: 8px; }
+  @media (prefers-color-scheme: dark) {
+    .search-input { background: #1e2126 !important; border-color: #2b2f36 !important; }
+    .nav-btn.active { background: #2a3a52 !important; border-color: #7db4f7 !important; color: #e8e8e8 !important; }
+    mark { background: #6b5514 !important; }
+    .search-note { color: #6b7078 !important; }
+  }
   @media (prefers-color-scheme: dark) {
     .related { color: #d9a441 !important; }
     .summary { color: #9aa0a8 !important; }
@@ -1072,12 +1160,57 @@ async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
     .to-top { background: #1e2126 !important; border-color: #2b2f36 !important; color: #c7ccd4 !important; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4) !important; }
     .to-top:hover { background: #23262c !important; }
   }
-</style>
+`;
+
+async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
+  const groups = groupSimilarNews(news).sort((a, b) => b.sortTime - a.sortTime);
+  const rankedByScore = [...groups].sort((a, b) => scoreGroup(b) - scoreGroup(a));
+  const topGroups = rankedByScore.slice(0, 5);
+  const nextGroups = rankedByScore.slice(5, 10);
+
+  await fillMissingSummaries(topGroups);
+
+  const topRows = topGroups.map((g) => renderCard(g, { showSummary: true })).join("\n");
+  const nextRows = nextGroups.map((g) => renderCard(g)).join("\n");
+
+  // Top 10에 이미 나온 기사는 전체 뉴스에서 중복 노출하지 않음
+  const shownLinks = new Set(
+    [...topGroups, ...nextGroups].map((g) => g.representative.link)
+  );
+  const restGroups = groups.filter((g) => !shownLinks.has(g.representative.link));
+  const rows = restGroups.map((g) => renderCard(g)).join("\n");
+
+  const prevDate = shiftDateStr(dateStr, -1);
+  const nextDate = shiftDateStr(dateStr, 1);
+  const isToday = dateStr === todayStr;
+  const nextLinkHtml = isToday
+    ? `<span class="nav-btn disabled">다음 날 ▶</span>`
+    : `<a class="nav-btn" href="/?date=${nextDate}">다음 날 ▶</a>`;
+  const todayLinkHtml = isToday
+    ? ""
+    : `<a class="nav-btn today" href="/">오늘로</a>`;
+  const expandedNoteHtml =
+    oldestDateUsed !== dateStr
+      ? `<div class="expanded-note">해당 날짜 기사가 적어 이전 날짜까지 포함했어요</div>`
+      : "";
+
+  return `<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>반도체 뉴스</title>
+<style>
+${PAGE_CSS}</style>
 </head>
 <body>
   <header>
-    <h1>반도체 뉴스</h1>
+    <h1><a href="/">반도체 뉴스</a></h1>
     <div class="sub">${news.length}건 (${groups.length}개 이슈) · 1시간마다 자동 수집</div>
+    <form class="search-form" action="/search" method="get" role="search">
+      <input class="search-input" type="search" name="q" placeholder="기사 검색 (예: HBM, 삼성 파운드리)" aria-label="검색어" />
+      <button class="search-btn" type="submit">검색</button>
+    </form>
     <div class="date-nav">
       <span class="date-label">${formatDateRangeLabel(oldestDateUsed, dateStr)}</span>
       <a class="nav-btn" href="/?date=${prevDate}">◀ 이전 날</a>
@@ -1113,18 +1246,114 @@ async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
         : ""
     }
   </main>
-  <button type="button" class="to-top" id="to-top" aria-label="맨 위로" title="맨 위로">↑</button>
-  <script>
-    (function () {
-      var btn = document.getElementById("to-top");
-      function update() { btn.classList.toggle("show", window.scrollY > 400); }
-      window.addEventListener("scroll", update, { passive: true });
-      update();
-      btn.addEventListener("click", function () {
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      });
-    })();
-  </script>
+  ${TO_TOP_HTML}
+</body>
+</html>`;
+}
+
+// 검색 기간 바로가기. days가 null이면 전체 기간
+const SEARCH_PERIODS = [
+  { label: "1주", days: 7 },
+  { label: "1개월", days: 30 },
+  { label: "3개월", days: 90 },
+  { label: "1년", days: 365 },
+  { label: "전체", days: null },
+];
+const DEFAULT_SEARCH_DAYS = 30;
+
+function periodRange(days, todayStr) {
+  return days == null
+    ? { from: "", to: "" }
+    : { from: shiftDateStr(todayStr, -(days - 1)), to: todayStr };
+}
+
+// /search?q=...&from=YYYY-MM-DD&to=YYYY-MM-DD
+// from/to 키가 아예 없으면(메인 화면 검색창에서 온 경우) 최근 1개월,
+// 키는 있는데 값이 비어 있으면 그쪽 끝은 제한 없음.
+function resolveSearchRange(url, todayStr) {
+  if (!url.searchParams.has("from") && !url.searchParams.has("to")) {
+    return periodRange(DEFAULT_SEARCH_DAYS, todayStr);
+  }
+  let from = url.searchParams.get("from") || "";
+  let to = url.searchParams.get("to") || "";
+  if (from && !isValidDateStr(from)) from = "";
+  if (to && !isValidDateStr(to)) to = "";
+  if (from && to && from > to) [from, to] = [to, from];
+  return { from, to };
+}
+
+function formatRangeText(from, to) {
+  if (!from && !to) return "전체 기간";
+  const f = from ? from.replace(/-/g, ".") : "처음";
+  const t = to ? to.replace(/-/g, ".") : "오늘";
+  return `${f} ~ ${t}`;
+}
+
+function renderSearchPage({ q, terms, from, to, todayStr, news }) {
+  const groups = groupSimilarNews(news).sort((a, b) => b.sortTime - a.sortTime);
+  const highlightRe = buildHighlightRe(terms);
+  const rows = groups
+    .map((g) => renderCard(g, { showSummary: true, highlightRe, absoluteDate: true }))
+    .join("\n");
+  // 요약은 저장된 description만 쓴다. Top 5처럼 원문 og:description을 채우지 않는 이유는
+  // 결과가 수백 건이라 외부 호출 한도(50)에 바로 걸리기 때문
+
+  const qParam = encodeURIComponent(q);
+  const chips = SEARCH_PERIODS.map(({ label, days }) => {
+    const r = periodRange(days, todayStr);
+    const active = r.from === from && r.to === to;
+    const href = `/search?q=${qParam}&from=${r.from}&to=${r.to}`;
+    return `<a class="nav-btn${active ? " active" : ""}" href="${escapeHtml(href)}">${label}</a>`;
+  }).join("");
+
+  let resultHtml;
+  if (!terms.length) {
+    resultHtml = `<div class="empty">검색어를 입력하세요.</div>`;
+  } else if (!groups.length) {
+    resultHtml = `<div class="empty">${escapeHtml(formatRangeText(from, to))} 동안 “${escapeHtml(q)}” 기사가 없어요.<br />기간을 넓혀 보세요.</div>`;
+  } else {
+    const capNote =
+      news.length >= MAX_SEARCH_RESULTS
+        ? `<div class="search-note">최근 ${MAX_SEARCH_RESULTS}건까지만 보여줘요. 기간을 좁히거나 검색어를 더 구체적으로 입력해 보세요.</div>`
+        : "";
+    resultHtml = `${capNote}<div class="section-title">검색 결과</div><ul>${rows}</ul>`;
+  }
+
+  const title = terms.length ? `${q} - 반도체 뉴스 검색` : "반도체 뉴스 검색";
+
+  return `<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${escapeHtml(title)}</title>
+<style>
+${PAGE_CSS}</style>
+</head>
+<body>
+  <header>
+    <h1><a href="/">반도체 뉴스</a></h1>
+    <div class="sub">${
+      terms.length
+        ? `“${escapeHtml(q)}” · ${escapeHtml(formatRangeText(from, to))} · ${news.length}건 (${groups.length}개 이슈)`
+        : "제목·요약·언론사에서 찾아요"
+    }</div>
+    <form class="search-form" action="/search" method="get" role="search">
+      <input class="search-input" type="search" name="q" value="${escapeHtml(q)}" placeholder="기사 검색 (예: HBM, 삼성 파운드리)" aria-label="검색어" autofocus />
+      <button class="search-btn" type="submit">검색</button>
+      <div class="range-row">
+        <span>기간</span>
+        <input type="date" class="date-picker" name="from" value="${escapeHtml(from)}" max="${escapeHtml(todayStr)}" aria-label="시작 날짜" />
+        <span class="range-sep">~</span>
+        <input type="date" class="date-picker" name="to" value="${escapeHtml(to)}" max="${escapeHtml(todayStr)}" aria-label="끝 날짜" />
+      </div>
+    </form>
+    <div class="chips">${chips}</div>
+  </header>
+  <main>
+    ${resultHtml}
+  </main>
+  ${TO_TOP_HTML}
 </body>
 </html>`;
 }
@@ -1279,6 +1508,41 @@ export default {
         return new Response(JSON.stringify({ ok: false, error: err.message }, null, 2), {
           status: 500,
           headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // 검색: /search?q=HBM&from=2026-09-01&to=2026-09-30
+    if (url.pathname === "/search") {
+      try {
+        const todayStr = kstDateString();
+        const q = (url.searchParams.get("q") || "").trim().slice(0, 100);
+        const terms = parseSearchTerms(q);
+        const { from, to } = resolveSearchRange(url, todayStr);
+
+        const cache = caches.default;
+        const cacheKey = new Request(url.toString());
+        if (request.method === "GET" && terms.length) {
+          const hit = await cache.match(cacheKey);
+          if (hit) return hit;
+        }
+
+        const news = terms.length ? await searchNews(env, terms, from, to) : [];
+        const response = new Response(renderSearchPage({ q, terms, from, to, todayStr, news }), {
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            // 오늘이 포함된 검색은 새 기사가 계속 들어오니 오늘 화면과 같은 5분
+            "Cache-Control": `public, max-age=${PAGE_CACHE_SECONDS_TODAY}`,
+          },
+        });
+        if (request.method === "GET" && terms.length) {
+          ctx.waitUntil(cache.put(cacheKey, response.clone()));
+        }
+        return response;
+      } catch (err) {
+        return new Response(`<pre>${escapeHtml(err.message)}</pre>`, {
+          status: 500,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
         });
       }
     }
