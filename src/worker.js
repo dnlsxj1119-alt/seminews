@@ -154,23 +154,50 @@ function buildGoogleRssUrl(keyword, dateStr = null) {
 // 무료 플랜은 요청당 CPU가 10ms뿐이라 문자열을 여러 번 훑지 않는다.
 // 예전엔 replace를 7번 연속으로 돌려서 기사 하나당 문자열을 7번 스캔했음.
 const HTML_ENTITIES = {
-  "&amp;": "&",
-  "&lt;": "<",
-  "&gt;": ">",
-  "&quot;": '"',
-  "&#39;": "'",
-  "&apos;": "'",
-  "&nbsp;": " ",
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+  middot: "·",
+  hellip: "…",
+  lsquo: "‘",
+  rsquo: "’",
+  ldquo: "“",
+  rdquo: "”",
+  ndash: "–",
+  mdash: "—",
 };
+
+// &#39; 뿐 아니라 &#039;(앞에 0), &#8216;, &#x2019; 같은 숫자 코드도 전부 풀어준다.
+// 예전엔 &#39; 하나만 알아서 일부 언론사 제목에 &#039; 가 그대로 찍혔다.
+const ENTITY_RE = /&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([a-zA-Z]+));/g;
+
+function decodeEntities(s) {
+  if (s.indexOf("&") === -1) return s;
+  return s.replace(ENTITY_RE, (m, dec, hex, name) => {
+    if (name) return HTML_ENTITIES[name] ?? m;
+    const code = dec ? parseInt(dec, 10) : parseInt(hex, 16);
+    return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : m;
+  });
+}
 
 function decode(s) {
   if (s.indexOf("<![CDATA[") !== -1) {
     s = s.replace(/<!\[CDATA\[/g, "").replace(/\]\]>/g, "");
   }
-  if (s.indexOf("&") !== -1) {
-    s = s.replace(/&(?:amp|lt|gt|quot|#39|apos|nbsp);/g, (m) => HTML_ENTITIES[m]);
+  return decodeEntities(s).trim();
+}
+
+// 이미 &#039; 등이 그대로 저장된 옛 기사는 DB를 고치지 않고 화면에 그리기 직전에 풀어준다
+function fixStoredEntities(rows) {
+  for (const row of rows) {
+    if (row.title) row.title = decodeEntities(row.title);
+    if (row.description) row.description = decodeEntities(row.description);
+    if (row.source) row.source = decodeEntities(row.source);
   }
-  return s.trim();
+  return rows;
 }
 
 function safeIsoDate(raw) {
@@ -587,7 +614,7 @@ async function fetchNewsForDate(env, dateStr, limit = MAX_ITEMS_PER_PAGE) {
     const text = await res.text();
     throw new Error(`Supabase 조회 실패: ${res.status} ${text}`);
   }
-  return res.json();
+  return fixStoredEntities(await res.json());
 }
 
 // 날짜 구간 조회 (오늘 기사가 모자랄 때 과거를 한 번에 가져오는 용도)
@@ -612,7 +639,7 @@ async function fetchNewsInRange(env, fromStr, toStr, limit = MAX_ITEMS_PER_PAGE)
     const text = await res.text();
     throw new Error(`Supabase 조회 실패: ${res.status} ${text}`);
   }
-  return res.json();
+  return fixStoredEntities(await res.json());
 }
 
 // 오늘 기사가 너무 적으면(이른 아침 등) 최소 개수를 채울 때까지 하루씩 과거로 확장해서 합치되,
@@ -690,7 +717,7 @@ async function searchNews(env, terms, fromStr, toStr) {
     const text = await res.text();
     throw new Error(`Supabase 검색 실패: ${res.status} ${text}`);
   }
-  return res.json();
+  return fixStoredEntities(await res.json());
 }
 
 // 주요 매체 가중치 (Top 스코어링용). 목록에 없으면 기본값 1.5,
