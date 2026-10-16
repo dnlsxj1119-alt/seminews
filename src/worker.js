@@ -1039,6 +1039,27 @@ async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
     color: #374151;
     background: #fff;
   }
+  .to-top {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    border: 1px solid #e5e7eb;
+    background: #fff;
+    color: #374151;
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(8px);
+    transition: opacity 0.2s, transform 0.2s, visibility 0.2s;
+  }
+  .to-top.show { opacity: 1; visibility: visible; transform: none; }
+  .to-top:hover { background: #f3f4f6; }
   @media (prefers-color-scheme: dark) {
     .related { color: #d9a441 !important; }
     .summary { color: #9aa0a8 !important; }
@@ -1048,6 +1069,8 @@ async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
     .nav-btn.today { border-color: #7db4f7 !important; color: #7db4f7 !important; }
     .expanded-note { color: #6b7078 !important; }
     .date-picker { background: #1e2126 !important; border-color: #2b2f36 !important; color: #c7ccd4 !important; }
+    .to-top { background: #1e2126 !important; border-color: #2b2f36 !important; color: #c7ccd4 !important; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4) !important; }
+    .to-top:hover { background: #23262c !important; }
   }
 </style>
 </head>
@@ -1090,6 +1113,18 @@ async function renderNewsPage(news, dateStr, todayStr, oldestDateUsed) {
         : ""
     }
   </main>
+  <button type="button" class="to-top" id="to-top" aria-label="맨 위로" title="맨 위로">↑</button>
+  <script>
+    (function () {
+      var btn = document.getElementById("to-top");
+      function update() { btn.classList.toggle("show", window.scrollY > 400); }
+      window.addEventListener("scroll", update, { passive: true });
+      update();
+      btn.addEventListener("click", function () {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+    })();
+  </script>
 </body>
 </html>`;
 }
